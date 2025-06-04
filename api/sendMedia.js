@@ -1,143 +1,96 @@
 const fetch = require('node-fetch');
 const FormData = require('form-data');
 const formidable = require('formidable');
-const fs = require('fs').promises;
-const fileType = require('file-type');
+const fs = require('fs');
 
 module.exports = async (req, res) => {
   const botToken = process.env.TOKEN;
-  const allowedOrigin = 'https://youtube-dow1.vercel.app'; // دامنه مجاز خود را وارد کنید
-  const fixedCaption = '⚡Join ➣ @Hekmat_King';
+  const allowedOrigin = 'https://youtube-dow1.vercel.app'; // ← دامنه مجاز
 
-  // بررسی وجود توکن ربات
-  if (!botToken) {
-    console.error('Bot token not configured.');
-    return res.status(500).json({ ok: false, error: 'Bot token not configured.' });
+  if (req.headers.origin && req.headers.origin !== allowedOrigin) {
+    return res.status(403).json({ ok: false, error: 'Invalid origin' });
   }
 
-  // بررسی متد درخواست
   if (req.method !== 'POST') {
-    console.error('Method not allowed:', req.method);
-    return res.status(405).json({ ok: false, error: 'Method not allowed.' });
-  }
-
-  // بررسی دامنه درخواست
-  const origin = req.headers.origin || req.headers.referer;
-  if (!origin || !origin.startsWith(allowedOrigin)) {
-    console.error('Unauthorized domain:', origin);
-    return res.status(403).json({ ok: false, error: 'Unauthorized domain.' });
+    return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
   const form = new formidable.IncomingForm();
   form.parse(req, async (err, fields, files) => {
     if (err) {
-      console.error('Error parsing form:', err);
       return res.status(500).json({ ok: false, error: 'Failed to parse form data.' });
     }
 
-    // بررسی chat_id
-    const chatId = fields.chat_id;
-    if (!chatId || !/^-?\d+$/.test(chatId)) {
-      console.error('Invalid or missing chat_id:', chatId);
-      return res.status(400).json({ ok: false, error: 'Valid chat_id is required.' });
+    const allowedFields = ['chat_id', 'caption'];
+    const allowedFiles = ['photo', 'audio'];
+    for (const key in fields) {
+      if (!allowedFields.includes(key)) {
+        return res.status(400).json({ ok: false, error: 'Invalid input field: ' + key });
+      }
+    }
+    for (const key in files) {
+      if (!allowedFiles.includes(key)) {
+        return res.status(400).json({ ok: false, error: 'Invalid file field: ' + key });
+      }
     }
 
-    // بررسی کپشن
+    const chatId = fields.chat_id;
     const caption = fields.caption;
-    if (caption && caption !== fixedCaption) {
-      console.error('Invalid caption provided:', caption);
-      return res.status(400).json({ ok: false, error: 'Only the fixed caption is allowed.' });
+
+    if (!chatId || !caption) {
+      return res.status(400).json({ ok: false, error: 'chat_id and caption are required.' });
+    }
+
+    const allowedCaption = '⚡Join ➣ @Hekmat_King';
+    if (caption !== allowedCaption) {
+      return res.status(403).json({ ok: false, error: 'Invalid caption' });
     }
 
     try {
       if (files.photo) {
-        if (!files.photo.filepath) {
-          console.error('Photo filepath not found:', files.photo);
-          return res.status(400).json({ ok: false, error: 'Photo filepath not found.' });
+        const photoFile = files.photo;
+        if (!photoFile.filepath || photoFile.size > 20 * 1024 * 1024) {
+          return res.status(400).json({ ok: false, error: 'Invalid photo file.' });
         }
 
-        // بررسی نوع فایل
-        const fileInfo = await fileType.fromFile(files.photo.filepath);
-        if (!fileInfo || !['image/jpeg', 'image/png'].includes(fileInfo.mime)) {
-          console.error('Invalid photo format:', fileInfo ? fileInfo.mime : 'unknown');
-          await fs.unlink(files.photo.filepath).catch(() => {}); // حذف فایل موقت
-          return res.status(400).json({ ok: false, error: 'Only JPEG/PNG photos are allowed.' });
-        }
-
-        // بررسی حجم فایل
-        if (files.photo.size > 20 * 1024 * 1024) {
-          console.error('Photo too large:', files.photo.size);
-          await fs.unlink(files.photo.filepath).catch(() => {}); // حذف فایل موقت
-          return res.status(400).json({ ok: false, error: 'Photo too large (max 20 MB).' });
-        }
-
-        console.log('Processing photo, file size:', files.photo.size);
         const formData = new FormData();
         formData.append('chat_id', chatId);
-        formData.append('photo', fs.createReadStream(files.photo.filepath), { filename: 'photo.jpg' });
-        formData.append('caption', fixedCaption);
+        formData.append('photo', fs.createReadStream(photoFile.filepath), { filename: 'photo.jpg' });
+        formData.append('caption', caption);
 
-        const responsePhoto = await fetch(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
+        const response = await fetch(`https://api.telegram.org/bot${botToken}/sendPhoto`, {
           method: 'POST',
           body: formData
         });
-        const resultPhoto = await responsePhoto.json();
-
-        await fs.unlink(files.photo.filepath).catch(() => {}); // حذف فایل موقت
-
-        if (!resultPhoto.ok) {
-          console.error('Telegram API error (photo):', resultPhoto);
-          return res.status(500).json({ ok: false, error: resultPhoto.description });
+        const result = await response.json();
+        if (!result.ok) {
+          return res.status(500).json({ ok: false, error: result.description });
         }
-        console.log('Photo sent successfully:', resultPhoto);
-      } else if (files.audio) {
-        if (!files.audio.filepath) {
-          console.error('Audio filepath not found:', files.audio);
-          return res.status(400).json({ ok: false, error: 'Audio filepath not found.' });
+      }
+
+      if (files.audio) {
+        const audioFile = files.audio;
+        if (!audioFile.filepath || audioFile.size > 50 * 1024 * 1024) {
+          return res.status(400).json({ ok: false, error: 'Invalid audio file.' });
         }
 
-        // بررسی نوع فایل
-        const fileInfo = await fileType.fromFile(files.audio.filepath);
-        if (!fileInfo || !['audio/wav', 'audio/mpeg'].includes(fileInfo.mime)) {
-          console.error('Invalid audio format:', fileInfo ? fileInfo.mime : 'unknown');
-          await fs.unlink(files.audio.filepath).catch(() => {}); // حذف فایل موقت
-          return res.status(400).json({ ok: false, error: 'Only WAV/MP3 audio files are allowed.' });
-        }
-
-        // بررسی حجم فایل
-        if (files.audio.size > 50 * 1024 * 1024) {
-          console.error('Audio too large:', files.audio.size);
-          await fs.unlink(files.audio.filepath).catch(() => {}); // حذف فایل موقت
-          return res.status(400).json({ ok: false, error: 'Audio too large (max 50 MB).' });
-        }
-
-        console.log('Processing audio, file size:', files.audio.size);
         const formData = new FormData();
         formData.append('chat_id', chatId);
-        formData.append('audio', fs.createReadStream(files.audio.filepath), { filename: 'audio.wav' });
-        formData.append('caption', fixedCaption);
+        formData.append('audio', fs.createReadStream(audioFile.filepath), { filename: 'audio.wav' });
+        formData.append('caption', caption);
 
-        const responseAudio = await fetch(`https://api.telegram.org/bot${botToken}/sendAudio`, {
+        const response = await fetch(`https://api.telegram.org/bot${botToken}/sendAudio`, {
           method: 'POST',
           body: formData
         });
-        const resultAudio = await responseAudio.json();
-
-        await fs.unlink(files.audio.filepath).catch(() => {}); // حذف فایل موقت
-
-        if (!resultAudio.ok) {
-          console.error('Telegram API error (audio):', resultAudio);
-          return res.status(500).json({ ok: false, error: resultAudio.description });
+        const result = await response.json();
+        if (!result.ok) {
+          return res.status(500).json({ ok: false, error: result.description });
         }
-        console.log('Audio sent successfully:', resultAudio);
-      } else {
-        console.error('No valid photo or audio file provided.');
-        return res.status(400).json({ ok: false, error: 'No valid photo or audio file provided.' });
       }
 
       return res.status(200).json({ ok: true });
     } catch (error) {
-      console.error('Error in sendMedia:', error);
       return res.status(500).json({ ok: false, error: 'Failed to send media: ' + error.message });
     }
   });
